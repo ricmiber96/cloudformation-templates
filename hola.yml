@@ -1,0 +1,124 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: VPC completa con Subred, Internet Gateway, Tabla de Rutas e Instancia EC2 con vockey en us-east-1a.
+
+Parameters:
+  VpcCidrBlock:
+    Type: String
+    Default: "192.168.0.0/20"
+    Description: Rango CIDR para la VPC.
+
+  VpcName:
+    Type: String
+    Default: vpc-cloudformation-example
+    Description: Nombre de la VPC.
+
+  SubnetCidrBlock:
+    Type: String
+    Default: "192.168.1.0/24"
+    Description: Rango CIDR para la subred.
+
+  AvailabilityZone:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Default: "us-east-1a"
+    Description: Zona de Disponibilidad (Por defecto us-east-1a).
+
+  KeyName:
+    Type: String
+    Default: "vockey"
+    Description: Nombre de la llave para SSH (vockey para laboratorios AWS Academy).
+
+  InstanceAMI:
+    Type: String
+    Default: "ami-07ff62358b87c7116"
+    Description: ID de la AMI (Amazon Linux en us-east-1).
+
+Resources:
+  # --- RED ---
+  MyVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidrBlock
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Ref VpcName
+
+  MyInternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub "${VpcName}-IGW"
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref MyVPC
+      InternetGatewayId: !Ref MyInternetGateway
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref MyVPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${VpcName}-PublicRT"
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref MyInternetGateway
+
+  MySubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MyVPC
+      CidrBlock: !Ref SubnetCidrBlock
+      AvailabilityZone: !Ref AvailabilityZone
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${VpcName}-Subnet-Public"
+
+  SubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref MySubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  # --- SEGURIDAD E INSTANCIA ---
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Permitir SSH
+      VpcId: !Ref MyVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+
+  MyEC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.micro
+      ImageId: !Ref InstanceAMI
+      KeyName: !Ref KeyName
+      SubnetId: !Ref MySubnet
+      SecurityGroupIds:
+        - !Ref InstanceSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${VpcName}-Server"
+
+Outputs:
+  InstancePublicIP:
+    Description: IP para conectar
+    Value: !GetAtt MyEC2Instance.PublicIp
+  SSHCommand:
+    Description: Comando de conexión (Si usas labsuser.pem)
+    Value: !Sub "ssh -i labsuser.pem ec2-user@${MyEC2Instance.PublicIp}"
