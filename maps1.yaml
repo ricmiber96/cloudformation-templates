@@ -1,0 +1,40 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Parameters:
+    Enviroment:
+      Description: "Another Simple String Parameters with a list of allowed values"
+      Type: String
+      Default: dev
+      AllowedValues: 
+        - dev
+        - qa
+        - staging
+        - prod
+      ConstraintDescription:  Use valid enviroment [dev, qa, beta, prod]
+
+Mappings: 
+  QuantityOfInstance: 
+    dev:
+      qty: 1
+    qa:
+      qty: 1
+    beta:
+      qty: 2
+    prod:
+      qty: 5
+
+Resources:
+  DemoResource:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      Tags:
+        - Key: "Enviroment"
+          Value: !Ref Enviroment
+        - Key: "InstanceQuantity"
+          Value: !FindInMap [QuantityOfInstance,!Ref Enviroment,qty]
+
+
+
+
+
+        
