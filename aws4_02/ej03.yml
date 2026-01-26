@@ -1,0 +1,85 @@
+# Crear un Application Load Balancer (ALB) y un Auto Scaling Group en múltiples zonas de disponibilidad.
+# Habrá un parámetro ALBPublico que me indicará si quiero mostrarlo a Internet el balanceador, y en el
+# esquema del LoadBalancer determinaré con ¡If si es “internet-facing” o “internal”. Los nombres de los
+# recursos serán una combinación del nombre que se escriba por parámetro y por defecto tendrá el valor
+# “vívalalandingzone” que lo unirás usando un Join con tu propio nombre.
+
+AWSTemplateFormatVersion: "2010-09-09"
+Parameters:
+  ALBPublico:
+    Type: String
+    AllowedValues:
+      - "true"
+      - "false"
+    Default: "false"
+    Description: "Indica si el ALB será público (true) o interno (false)"
+  
+  NombreRecurso:
+    Type: String
+    Default: "vivalandingzone"
+    Description: "Nombre base para los recursos"
+
+Resources:
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Join ["-", [!Ref NombreRecurso, "AmazonQ-alb"]]
+      Scheme: !If [EsPublico, "internet-facing", "internal"]
+      SecurityGroups: 
+        - !Ref ALBSecurityGroup
+      Subnets:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      Type: "application"
+
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for ALB
+      GroupName: !Join ["-", [!Ref NombreRecurso, "AmazonQ-albsg"]]
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: !Join ["-", [!Ref NombreRecurso, "AmazonQ-asg"]]
+      MinSize: 1
+      MaxSize: 3
+      DesiredCapacity: 2
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 300
+      VPCZoneIdentifier:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      TargetGroupARNs:
+        - !Ref ALBTargetGroup
+
+  ALBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Join ["-", [!Ref NombreRecurso, "AmazonQ-tg"]]
+      Port: 80
+      Protocol: HTTP
+      VpcId: !Ref VPC
+      HealthCheckPath: "/"
+      HealthCheckProtocol: HTTP
+      HealthCheckPort: "traffic-port"
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ALBTargetGroup
+
+Conditions:
+  EsPublico: !Equals [!Ref ALBPublico, "true"]

@@ -1,0 +1,76 @@
+# 2. Crear una VPC con subredes en diferentes regiones usando Mappings. Se selecciona dinámicamente una
+# zona de disponibilidad, para una región se seleccionará el rango 10.0.0.0/20 para la VPC y para la otra
+# región 172.16.0.0/20.Añade una condición que determine si se adjunta un IGW en función de un
+# parámetro que tomará dos valores (true, false) y por defecto tendrá true (Fn::Select y GetAZs) y se usa
+# Fn::If para decidir si se adjunta un Internet Gateway.
+
+AWSTemplateFormatVersion: 2010-09-09
+Description: Crear una VPC con subredes en diferentes regiones usando Mapping
+
+Parameters:
+  AvailabilityZone:
+    Description: Zona de disponibilidad
+    Type: String
+    Default: us-east-1a
+    AllowedValues: 
+      - us-east-1a
+      - us-east-1b
+  GetIGW:
+    Description: Indica si se quiere crear un IGW
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+
+Mappings:
+  RegionMap:
+    us-east-1a:
+      CIDR: 10.0.0.0/20
+    us-east-1b:
+      CIDR: 172.16.0.0/20
+
+Conditions:
+  CreateIGWCondition: !Equals [!Ref GetIGW, "true"]
+
+Resources:
+  MyVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !FindInMap [RegionMap, !Ref AvailabilityZone, CIDR]
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: MyVPC
+
+  MySubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: 
+        Ref: MyVPC
+      CidrBlock: !Select [ 0, !Cidr [ !GetAtt MyVPC.CidrBlock, 1, 4 ] ]
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: MySubnet
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Condition: CreateIGWCondition
+    Properties:
+      Tags:
+        - Key: Name
+          # Aquí usamos !If para demostrar su uso en propiedades como pide el enunciado
+          # "Si se crea, ponle nombre MyIGW, sino (esto no se ejecutará si el recurso no se crea) N/A"
+          Value: !If [CreateIGWCondition, "MyIGW", "N/A"]
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Condition: CreateIGWCondition
+    Properties:
+      VpcId: !Ref MyVPC
+      InternetGatewayId: !Ref InternetGateway
+  
+

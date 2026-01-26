@@ -116,7 +116,7 @@ Resources:
       AllocatedStorage: "20"
       DBInstanceClass: db.t3.micro
       Engine: mysql
-      Port: "5432"  # Forzamos MySQL a usar el puerto 5432
+      Port: "5432" # Forzamos MySQL a usar el puerto 5432
       MasterUsername: !Ref DBUsername
       MasterUserPassword: !Ref DBPassword
       DBName: !Ref DBName
