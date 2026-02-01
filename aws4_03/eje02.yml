@@ -1,0 +1,94 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Despliegue de RDS MySQL Multi-AZ en subredes privadas existentes'
+
+Parameters:
+  Environment:
+    Description: Entorno de despliegue (Define el tamaño de la instancia).
+    Type: String
+    Default: Dev
+    AllowedValues:
+      - Dev
+      - Prod
+
+  VpcId:
+    Description: ID de la VPC existente donde se desplegará la RDS.
+    Type: AWS::EC2::VPC::Id
+
+  PrivateSubnetIds:
+    Description: Lista de al menos dos IDs de subredes privadas existentes para el grupo de subredes.
+    Type: List<AWS::EC2::Subnet::Id>
+
+  PrivateSubnetsCidr:
+    Description: Rango CIDR de las subredes privadas para permitir tráfico en el Security Group (ej. 10.0.0.0/16).
+    Type: String
+
+  DBEngineVersion:
+    Description: Versión del motor MySQL (ej. 8.0).
+    Type: String
+    Default: "8.0"
+
+  DBUser:
+    Description: Nombre de usuario maestro de la base de datos.
+    Type: String
+    Default: admin
+
+  DBPassword:
+    Description: Contraseña maestra de la base de datos.
+    Type: String
+    NoEcho: true # Oculta la contraseña en la consola y logs
+
+Mappings:
+  InstanceConfig:
+    Dev:
+      DBInstanceType: db.t3.micro
+    Prod:
+      DBInstanceType: db.m5.large
+
+Resources:
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Permitir acceso MySQL desde subredes privadas
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          CidrIp: !Ref PrivateSubnetsCidr
+
+  MyDBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Grupo de subredes para RDS MultiAZ
+      SubnetIds: !Ref PrivateSubnetIds
+
+  MySQLInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      Engine: mysql
+      EngineVersion: !Ref DBEngineVersion
+      # Mapeo del tamaño de instancia según entorno
+      DBInstanceClass: !FindInMap [InstanceConfig, !Ref Environment, DBInstanceType]
+      # Credenciales
+      MasterUsername: !Ref DBUser
+      MasterUserPassword: !Ref DBPassword
+      # Red y Seguridad
+      DBSubnetGroupName: !Ref MyDBSubnetGroup
+      VPCSecurityGroups:
+        - !Ref DBSecurityGroup
+      # Requisito: "modo Multi-AZ"
+      MultiAZ: true
+      AllocatedStorage: 20
+      PubliclyAccessible: false
+      Tags:
+        - Key: Name
+          Value: !Sub "RDS-${Environment}"
+
+Outputs:
+  RDSEndpoint:
+    Description: Dirección de conexión (Endpoint) de la base de datos.
+    Value: !GetAtt MySQLInstance.Endpoint.Address
+  
+  RDSPort:
+    Description: Puerto de la base de datos.
+    Value: !GetAtt MySQLInstance.Endpoint.Port

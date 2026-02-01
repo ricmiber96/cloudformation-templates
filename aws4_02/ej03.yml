@@ -1,9 +1,3 @@
-# Crear un Application Load Balancer (ALB) y un Auto Scaling Group en múltiples zonas de disponibilidad.
-# Habrá un parámetro ALBPublico que me indicará si quiero mostrarlo a Internet el balanceador, y en el
-# esquema del LoadBalancer determinaré con ¡If si es “internet-facing” o “internal”. Los nombres de los
-# recursos serán una combinación del nombre que se escriba por parámetro y por defecto tendrá el valor
-# “vívalalandingzone” que lo unirás usando un Join con tu propio nombre.
-
 AWSTemplateFormatVersion: "2010-09-09"
 Parameters:
   ALBPublico:

@@ -1,0 +1,78 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: >
+  Creación de Bucket S3 con permisos condicionales (Público/Privado) y 
+  configuración de almacenamiento basada en Mappings.
+
+Parameters:
+  MyBucketName:
+    Description: Nombre único global para el bucket S3 (minúsculas, sin espacios).
+    Type: String
+
+  AccessLevel:
+    Description: Nivel de acceso del bucket.
+    Type: String
+    Default: Private
+    AllowedValues:
+      - Private
+      - Public
+
+  Environment:
+    Description: Entorno para definir la clase de almacenamiento (Dev=Standard, Prod=Intelligent-Tiering).
+    Type: String
+    Default: Dev
+    AllowedValues:
+      - Dev
+      - Prod
+
+Mappings:
+  StorageConfig:
+    Dev:
+      StorageClass: STANDARD
+    Prod:
+      StorageClass: INTELLIGENT_TIERING
+
+Conditions:
+  IsPublicBucket: !Equals [!Ref AccessLevel, "Public"]
+
+Resources:
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref MyBucketName
+      
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: !If [IsPublicBucket, false, true]
+        BlockPublicPolicy: !If [IsPublicBucket, false, true]
+        IgnorePublicAcls: !If [IsPublicBucket, false, true]
+        RestrictPublicBuckets: !If [IsPublicBucket, false, true]
+
+      LifecycleConfiguration:
+        Rules:
+          - Id: MoveToMappedStorageClass
+            Status: Enabled
+            Transitions:
+              - StorageClass: !FindInMap [StorageConfig, !Ref Environment, StorageClass]
+                TransitionInDays: 30
+
+  PublicBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: IsPublicBucket
+    Properties:
+      Bucket: !Ref S3Bucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: 's3:GetObject'
+            Resource: !Sub "arn:aws:s3:::${MyBucketName}/*"
+
+Outputs:
+  BucketARN:
+    Description: Amazon Resource Name (ARN) del bucket.
+    Value: !GetAtt S3Bucket.Arn
+
+  UploadURL:
+    Description: URL para la carga/acceso de archivos.
+    Value: !Sub "https://${MyBucketName}.s3.amazonaws.com"

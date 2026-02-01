@@ -1,0 +1,268 @@
+# SECCIÓN 1: AWSTemplateFormatVersion
+# Obligatorio. Define la estructura válida. Solo existe esta fecha.
+AWSTemplateFormatVersion: '2010-09-09'
+
+# SECCIÓN 2: Transform
+# Opcional. Permite usar sintaxis simplificada (Macros).
+# Aquí usamos SAM (Serverless Application Model) para definir una Lambda fácilmente.
+# NOTA EXAMEN: Al usar esto, al desplegar debes marcar la casilla "I acknowledge that AWS CloudFormation might create IAM resources".
+Transform: AWS::Serverless-2016-10-31
+
+# SECCIÓN 3: Description
+# Opcional. Texto libre para explicar qué hace la plantilla.
+Description: >
+  PLANTILLA MAESTRA DE ESTUDIO.
+  Despliega: VPC (Ex.1) + RDS MultiAZ (Ex.2) + S3 (Ex.3) + Lambda.
+  Integra las 10 secciones de CloudFormation.
+
+# SECCIÓN 4: Metadata
+# Opcional. Configuración visual para la consola de AWS o herramientas externas.
+# No afecta a la creación de recursos, solo a cómo se presentan los parámetros.
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "1. Configuración del Entorno"
+        Parameters:
+          - Environment
+      - Label:
+          default: "2. Configuración de Base de Datos"
+        Parameters:
+          - DBUser
+          - DBPassword
+      - Label:
+          default: "3. Configuración de Almacenamiento S3"
+        Parameters:
+          - BucketName
+          - BucketAccess
+      - Label:
+          default: "4. Configuración de Red Avanzada"
+        Parameters:
+          - EnablePeering
+          - PeeringVpcId
+
+# SECCIÓN 5: Parameters
+# Opcional. Valores dinámicos que el usuario introduce al crear la pila.
+Parameters:
+  Environment:
+    Description: Define el entorno (afecta a CIDRs, tamaño RDS y tipo S3).
+    Type: String
+    Default: Dev
+    AllowedValues: [Dev, Prod]
+
+  DBUser:
+    Description: Usuario maestro para RDS.
+    Type: String
+    Default: admin
+    MinLength: 4
+
+  DBPassword:
+    Description: Contraseña para RDS.
+    Type: String
+    NoEcho: true # Oculta los caracteres en la consola/logs.
+
+  BucketName:
+    Description: Nombre único global para el S3.
+    Type: String
+
+  BucketAccess:
+    Description: ¿El bucket debe ser público o privado?
+    Type: String
+    Default: Private
+    AllowedValues: [Private, Public]
+
+  EnablePeering:
+    Description: ¿Activar peering con otra VPC?
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+
+  PeeringVpcId:
+    Description: ID de la VPC externa (Solo si EnablePeering es true).
+    Type: String
+    Default: ""
+
+# SECCIÓN 6: Rules
+# Opcional. Validaciones lógicas cruzadas entre parámetros.
+Rules:
+  ValidatePeeringLogic:
+    # Condición: ¿El usuario activó el peering?
+    RuleCondition: !Equals [!Ref EnablePeering, "true"]
+    Assertions:
+      # Si la condición es cierta, validamos que PeeringVpcId no esté vacío.
+      - Assert: !Not [!Equals [!Ref PeeringVpcId, ""]]
+        AssertDescription: "Si activa 'EnablePeering', debe introducir un 'PeeringVpcId'."
+
+# SECCIÓN 7: Mappings
+# Opcional. Tabla de variables fijas (Diccionario).
+Mappings:
+  EnvConfig:
+    Dev:
+      # Red
+      CidrPublic: 10.0.1.0/24
+      CidrPrivate1: 10.0.10.0/24
+      CidrPrivate2: 10.0.11.0/24
+      # RDS
+      DBClass: db.t3.micro
+      # S3
+      StorageClass: STANDARD
+    Prod:
+      # Red
+      CidrPublic: 10.0.100.0/24
+      CidrPrivate1: 10.0.200.0/24
+      CidrPrivate2: 10.0.201.0/24
+      # RDS
+      DBClass: db.m5.large
+      # S3
+      StorageClass: INTELLIGENT_TIERING
+
+# SECCIÓN 8: Conditions
+# Opcional. Lógica booleana (True/False) para crear recursos condicionalmente.
+Conditions:
+  HasPeering: !Equals [!Ref EnablePeering, "true"]
+  IsPublicBucket: !Equals [!Ref BucketAccess, "Public"]
+
+# SECCIÓN 9: Resources
+# OBLIGATORIO. Los componentes de AWS que se crearán.
+Resources:
+  # --- BLOQUE DE RED (Ejercicio 1) ---
+  MyVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      Tags: [{Key: Name, Value: !Sub "VPC-${Environment}"}]
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  GatewayAttach:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref MyVPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # Subred Pública (Para NAT y salida a internet)
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MyVPC
+      CidrBlock: !FindInMap [EnvConfig, !Ref Environment, CidrPublic]
+      AvailabilityZone: !Select [0, !GetAZs ""]
+
+  # Subredes Privadas (Para RDS)
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MyVPC
+      CidrBlock: !FindInMap [EnvConfig, !Ref Environment, CidrPrivate1]
+      AvailabilityZone: !Select [0, !GetAZs ""]
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MyVPC
+      CidrBlock: !FindInMap [EnvConfig, !Ref Environment, CidrPrivate2]
+      AvailabilityZone: !Select [1, !GetAZs ""]
+
+  # Peering (CONDICIONAL)
+  VPCPeering:
+    Type: AWS::EC2::VPCPeeringConnection
+    Condition: HasPeering
+    Properties:
+      VpcId: !Ref MyVPC
+      PeerVpcId: !Ref PeeringVpcId
+
+  # --- BLOQUE DE BASE DE DATOS (Ejercicio 2) ---
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Acceso interno a RDS
+      VpcId: !Ref MyVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          # Permitimos acceso desde toda la VPC
+          CidrIp: 10.0.0.0/16
+
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subredes para RDS
+      SubnetIds: 
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+
+  MyDB:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      Engine: mysql
+      AllocatedStorage: 20
+      # Usamos Mapping para el tamaño
+      DBInstanceClass: !FindInMap [EnvConfig, !Ref Environment, DBClass]
+      MasterUsername: !Ref DBUser
+      MasterUserPassword: !Ref DBPassword
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups: [!Ref DBSecurityGroup]
+
+  # --- BLOQUE DE ALMACENAMIENTO S3 (Ejercicio 3) ---
+  MyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref BucketName
+      # Configuración condicional de bloqueo público
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: !If [IsPublicBucket, false, true]
+        BlockPublicPolicy: !If [IsPublicBucket, false, true]
+        IgnorePublicAcls: !If [IsPublicBucket, false, true]
+        RestrictPublicBuckets: !If [IsPublicBucket, false, true]
+      # Ciclo de vida basado en Mappings
+      LifecycleConfiguration:
+        Rules:
+          - Status: Enabled
+            Transitions:
+              - StorageClass: !FindInMap [EnvConfig, !Ref Environment, StorageClass]
+                TransitionInDays: 30
+
+  # Política S3 (CONDICIONAL: Solo si es Público)
+  BucketPublicPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: IsPublicBucket
+    Properties:
+      Bucket: !Ref MyBucket
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: "*"
+            Action: "s3:GetObject"
+            Resource: !Sub "arn:aws:s3:::${BucketName}/*"
+
+  # --- BLOQUE LAMBDA (Ejemplo de Transform) ---
+  # Gracias a 'Transform: AWS::Serverless...', podemos usar este tipo de recurso
+  MaintenanceFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: index.handler
+      Runtime: python3.9
+      InlineCode: |
+        def handler(event, context):
+            print("Función de mantenimiento ejecutada")
+            return "OK"
+
+# SECCIÓN 10: Outputs
+# Opcional. Valores devueltos para ver en consola o importar en otras pilas.
+Outputs:
+  VpcID:
+    Description: ID de la VPC creada
+    Value: !Ref MyVPC
+    Export: 
+      Name: !Sub "${AWS::StackName}-VPCID"
+  
+  RDSEndpoint:
+    Description: URL de conexión a la base de datos
+    Value: !GetAtt MyDB.Endpoint.Address
+  
+  S3BucketUrl:
+    Description: URL HTTPs del bucket
+    Value: !Sub "https://${MyBucket}.s3.amazonaws.com"

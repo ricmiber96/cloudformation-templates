@@ -1,0 +1,226 @@
+# 1. AWSTemplateFormatVersion
+# Versión obligatoria del esquema.
+AWSTemplateFormatVersion: '2010-09-09'
+
+# 2. Transform
+# Usamos SAM para incluir una función Lambda pequeña (un "tester" de conexión).
+# Esto justifica el uso de esta sección en el examen.
+Transform: AWS::Serverless-2016-10-31
+
+# 3. Description
+Description: >
+  Infraestructura completa: VPC con Subredes Públicas/Privadas + RDS MySQL Multi-AZ.
+  La base de datos se despliega en subredes privadas para máxima seguridad.
+
+# 4. Metadata
+# Organiza visualmente los parámetros en la consola de AWS.
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "1. Configuración de Red"
+        Parameters:
+          - VpcCidr
+      - Label:
+          default: "2. Configuración de Base de Datos"
+        Parameters:
+          - Environment
+          - DBUser
+          - DBPassword
+
+# 5. Parameters
+Parameters:
+  Environment:
+    Description: Entorno de despliegue (Prod habilita Multi-AZ real y protección contra borrado).
+    Type: String
+    Default: Dev
+    AllowedValues: [Dev, Prod]
+
+  VpcCidr:
+    Description: Rango IP para la nueva VPC.
+    Type: String
+    Default: 10.0.0.0/16
+
+  DBUser:
+    Description: Usuario maestro de la base de datos (No usar 'admin' ni 'root').
+    Type: String
+    Default: dbadmin
+    AllowedPattern: "[a-zA-Z0-9]*"
+
+  DBPassword:
+    Description: Contraseña maestra (Mínimo 8 caracteres).
+    Type: String
+    NoEcho: true # Oculta la contraseña en logs y consola
+    MinLength: 8
+
+# 6. Rules
+# Regla de Seguridad: Prohibir nombres de usuario comunes/inseguros.
+Rules:
+  SecureUserRule:
+    Assertions:
+      - Assert: !Not [!Equals [!Ref DBUser, "root"]]
+        AssertDescription: "Por seguridad, el usuario maestro no puede llamarse 'root'."
+      - Assert: !Not [!Equals [!Ref DBUser, "admin"]]
+        AssertDescription: "Por seguridad, el usuario maestro no puede llamarse 'admin'."
+
+# 7. Mappings
+# Define características del hardware según el entorno.
+Mappings:
+  EnvConfig:
+    Dev:
+      DBClass: db.t3.micro
+      AllocatedStorage: 20
+    Prod:
+      DBClass: db.t3.small # O db.m5.large en un caso real
+      AllocatedStorage: 50
+
+# 8. Conditions
+# Lógica: Si es Producción, activamos protección contra borrado y backup automático.
+Conditions:
+  IsProduction: !Equals [!Ref Environment, "Prod"]
+
+# 9. Resources
+Resources:
+  # --- CAPA DE RED (Networking) ---
+  
+  # 1. VPC
+  MyVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags: [{Key: Name, Value: !Sub "RDS-VPC-${Environment}"}]
+
+  # 2. Internet Gateway (Para dar salida a internet si fuera necesario)
+  MyIGW:
+    Type: AWS::EC2::InternetGateway
+
+  GatewayAttach:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref MyVPC
+      InternetGatewayId: !Ref MyIGW
+
+  # 3. Subredes PRIVADAS (Donde vivirá la RDS)
+  # IMPORTANTE: Para Multi-AZ necesitamos 2 subredes en 2 AZs distintas.
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MyVPC
+      CidrBlock: !Select [0, !Cidr [!Ref VpcCidr, 4, 8]] # Genera 10.0.0.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""] # AZ A
+      Tags: [{Key: Name, Value: Private-Subnet-A}]
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MyVPC
+      CidrBlock: !Select [1, !Cidr [!Ref VpcCidr, 4, 8]] # Genera 10.0.1.0/24
+      AvailabilityZone: !Select [1, !GetAZs ""] # AZ B
+      Tags: [{Key: Name, Value: Private-Subnet-B}]
+
+  # 4. Tabla de Rutas (Privada - Solo local)
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref MyVPC
+
+  PrivateSubnet1Assoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnet2Assoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable
+
+  # --- CAPA DE SEGURIDAD ---
+
+  # 5. Security Group para RDS
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow MySQL Port within VPC
+      VpcId: !Ref MyVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          CidrIp: !Ref VpcCidr # Permite tráfico desde dentro de la VPC
+
+  # --- CAPA DE BASE DE DATOS ---
+
+  # 6. DB Subnet Group
+  # Agrupa las subredes donde RDS puede colocar las réplicas.
+  MyDBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subredes para MultiAZ
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+
+  # 7. Instancia RDS
+  MyRDSInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      Engine: mysql
+      EngineVersion: "8.0"
+      
+      # Mapeos: Tamaño y Almacenamiento según Env
+      DBInstanceClass: !FindInMap [EnvConfig, !Ref Environment, DBClass]
+      AllocatedStorage: !FindInMap [EnvConfig, !Ref Environment, AllocatedStorage]
+      
+      # Credenciales
+      MasterUsername: !Ref DBUser
+      MasterUserPassword: !Ref DBPassword
+      
+      # Red
+      DBSubnetGroupName: !Ref MyDBSubnetGroup
+      VPCSecurityGroups: [!Ref DBSecurityGroup]
+      
+      # Multi-AZ y Condiciones
+      # Si es Prod, MultiAZ es true. Si es Dev, false.
+      MultiAZ: !If [IsProduction, true, false]
+      # Si es Prod, activamos DeletionProtection
+      DeletionProtection: !If [IsProduction, true, false]
+      
+      # Tags dinámicos
+      Tags: [{Key: Environment, Value: !Ref Environment}]
+
+  # --- CAPA SERVERLESS (Transform) ---
+  
+  # 8. Lambda Placeholder
+  # Justifica el uso de Transform y Metadata
+  ConnectivityTester:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: index.handler
+      Runtime: nodejs18.x
+      InlineCode: |
+        exports.handler = async (event) => {
+          console.log("Lambda para probar conectividad futura a RDS");
+        };
+      VpcConfig:
+        SecurityGroupIds: [!Ref DBSecurityGroup]
+        SubnetIds: [!Ref PrivateSubnet1, !Ref PrivateSubnet2]
+
+# 10. Outputs
+Outputs:
+  RDSEndpoint:
+    Description: Endpoint para conectar a la BBDD
+    Value: !GetAtt MyRDSInstance.Endpoint.Address
+    Export:
+      Name: !Sub "${AWS::StackName}-RDSEndpoint"
+
+  RDSPort:
+    Description: Puerto de la BBDD
+    Value: !GetAtt MyRDSInstance.Endpoint.Port
+
+  JDBCConnectionString:
+    Description: Cadena de conexión JDBC
+    Value: !Sub "jdbc:mysql://${MyRDSInstance.Endpoint.Address}:${MyRDSInstance.Endpoint.Port}/mydb"

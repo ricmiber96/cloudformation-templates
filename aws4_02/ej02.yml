@@ -1,9 +1,3 @@
-# 2. Crear una VPC con subredes en diferentes regiones usando Mappings. Se selecciona dinámicamente una
-# zona de disponibilidad, para una región se seleccionará el rango 10.0.0.0/20 para la VPC y para la otra
-# región 172.16.0.0/20.Añade una condición que determine si se adjunta un IGW en función de un
-# parámetro que tomará dos valores (true, false) y por defecto tendrá true (Fn::Select y GetAZs) y se usa
-# Fn::If para decidir si se adjunta un Internet Gateway.
-
 AWSTemplateFormatVersion: 2010-09-09
 Description: Crear una VPC con subredes en diferentes regiones usando Mapping
 
