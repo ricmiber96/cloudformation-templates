@@ -1,0 +1,89 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Parameters:
+    RDSVersion:
+        Type: Number
+        Default: 13.4
+        AllowedValues:
+            - 13.4
+            - 13.3
+            - 13.2
+            - 13.1
+            - 13.0
+    UserDB:
+        Type: String
+        Default: admin
+        Description: Nombre de usuario para la base de datos
+
+    PasswordDB:
+        Type: String
+        NoEcho: true
+        Default: password
+        Description: Contraseña para la base de datos
+
+Resources:
+    VPC1:
+      Type: AWS::EC2::VPC
+      Properties:
+        CidrBlock: !Ref VpcCIDR
+        EnableDnsSupport: true
+        EnableDnsHostnames: true
+        Tags:
+          - Key: Name
+            Value: !Sub "${EnvironmentName}-vpc1"
+
+    Private1:
+      Type: AWS::EC2::Subnet
+      Properties:
+        VpcId: !Ref VPC1
+        CidrBlock: !Ref PrivateSubnet1CIDR
+        AvailabilityZone: !Select [0, !GetAZs '']
+        MapPublicIpOnLaunch: false
+        Tags:
+          - Key: Name
+            Value: !Sub "${EnvironmentName}-private1"
+
+    RDSMysql:
+      Type: AWS::RDS::DBInstance
+      Properties:
+        DBInstanceIdentifier: !Sub "${EnvironmentName}-rds-mysql"
+        DBInstanceClass: db.t2.micro
+        Engine: mysql
+        EngineVersion: !Ref RDSVersion
+        MasterUsername: !Ref UserDB
+        MasterUserPassword: !Ref PasswordDB
+        AllocatedStorage: 20
+        StorageType: gp2
+        VPCSecurityGroups:
+          - !Ref RDSSecurityGroup
+        DBSubnetGroupName: !Ref DatabaseSubnetGroup
+        BackupRetentionPeriod: 7
+        DeletionProtection: true
+        MultiAZ: true
+        Tags:
+          - Key: Name
+            Value: !Sub "${EnvironmentName}-rds-mysql"
+
+    RDSSecurityGroup:
+      Type: AWS::EC2::SecurityGroup
+      Properties:
+        GroupDescription: Security group for RDS MySQL
+        VpcId: !Ref VPC1
+        SecurityGroupIngress:
+          - IpProtocol: tcp
+            FromPort: 3306
+            ToPort: 3306
+            CidrIp: !Ref VpcCIDR
+        Tags:
+          - Key: Name
+            Value: !Sub "${EnvironmentName}-rds-sg"
+
+    DatabaseSubnetGroup:
+      Type: AWS::RDS::DBSubnetGroup
+      Properties:
+        DBSubnetGroupDescription: Subnet group for RDS MySQL
+        SubnetIds:
+          - !Ref Private1
+        Tags:
+          - Key: Name
+            Value: !Sub "${EnvironmentName}-rds-subnetgroup"

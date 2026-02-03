@@ -1,0 +1,16 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: ec2
+
+Parameters:
+  ImageId:
+    Type: String
+    Default: "ami-0c02fb55956c7d316"
+    Description: "ID de la imagen AMI para la instancia EC2"
+    
+Resources:
+  WebAppInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-0c02fb55956c7d316 # ImageID valid only in us-east-1 region
+      InstanceType: t2.micro
+

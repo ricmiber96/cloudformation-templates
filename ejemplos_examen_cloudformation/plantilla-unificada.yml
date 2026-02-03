@@ -1,0 +1,417 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Mega-Plantilla Unificada: VPC 3 Capas, ALB, ASG, RDS Multi-AZ, S3 Condicional y Bastion Host.
+  Integra lógica de 7 ejemplos diferentes (Mappings, Conditions, Rules, SSM Params).
+
+Parameters:
+  # --- General & Network Parameters ---
+  Environment:
+    Description: Entorno de despliegue (Controla CIDRs, tamaños y configuración S3).
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - prod
+  
+  AvailabilityZone:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Description: AZ principal para recursos single-zone (ej. Bastion).
+
+  CreateIGW:
+    Description: "Controla si se crea el Internet Gateway (Lógica del Ejemplo 3)"
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+
+  # --- Compute Parameters ---
+  AmiID:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Description: ID de la AMI para las instancias EC2 (SSM).
+    Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
+
+  KeyPairName:
+    Type: String
+    Description: Nombre del KeyPair existente para SSH.
+
+  EC2InstanceType:
+    Type: String
+    Description: Tipo de instancia (Validado por Rules para el Bastion).
+    Default: t2.micro
+    AllowedValues: [t2.micro, t2.small, t2.medium]
+
+  CreateBastionInstance:
+    Description: "Indica si se crea la instancia Bastion EC2 (Lógica del Ejemplo 2)"
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+
+  # --- Load Balancer Parameters ---
+  ALBPublico:
+    Type: String
+    Description: "Indica si el ALB es Internet-facing (true) o Internal (false)"
+    Default: "true"
+    AllowedValues: ["true", "false"]
+
+  # --- Database Parameters ---
+  DBName:
+    Type: String
+    Default: "webappdb"
+    Description: Nombre de la base de datos MySQL.
+  
+  DBUser:
+    Type: String
+    Description: Usuario maestro de la DB.
+    Default: "admin"
+  
+  DBPassword:
+    Type: String
+    Description: Contraseña maestra de la DB.
+    NoEcho: true
+    MinLength: 8
+
+  # --- S3 Parameters ---
+  MyBucketName:
+    Type: String
+    Description: Nombre unico global para el Bucket S3.
+  
+  BucketAccessLevel:
+    Description: Nivel de acceso del bucket S3.
+    Type: String
+    Default: Private
+    AllowedValues: [Private, Public]
+
+Mappings:
+  # Consolida lógica de redes y tamaños de instancia
+  EnvironmentConfig:
+    dev:
+      VpcCIDR: 10.0.0.0/16
+      PublicSubnet1CIDR: 10.0.1.0/24
+      PublicSubnet2CIDR: 10.0.2.0/24
+      PrivateSubnet1CIDR: 10.0.10.0/24
+      PrivateSubnet2CIDR: 10.0.11.0/24
+      AppInstanceType: t2.nano     # Para el ASG
+      DBInstanceClass: db.t3.micro
+      S3StorageClass: STANDARD
+    prod:
+      VpcCIDR: 172.16.0.0/16
+      PublicSubnet1CIDR: 172.16.1.0/24
+      PublicSubnet2CIDR: 172.16.2.0/24
+      PrivateSubnet1CIDR: 172.16.10.0/24
+      PrivateSubnet2CIDR: 172.16.11.0/24
+      AppInstanceType: t2.small    # Para el ASG
+      DBInstanceClass: db.m5.large
+      S3StorageClass: INTELLIGENT_TIERING
+
+Conditions:
+  # Lógica consolidada de todos los ejemplos
+  CreateIGWCondition: !Equals [!Ref CreateIGW, "true"]
+  CreateBastionCondition: !Equals [!Ref CreateBastionInstance, "true"]
+  IsALBPublic: !Equals [!Ref ALBPublico, "true"]
+  IsBucketPublic: !Equals [!Ref BucketAccessLevel, "Public"]
+
+Rules:
+  # Regla del Ejemplo 2
+  ValidateInstanceType:
+    RuleCondition: !Equals [!Ref CreateBastionInstance, "true"]
+    Assertions:
+      - AssertDescription: "Si se crea Bastion, el tipo debe ser de la familia T2"
+        Assert: !Contains
+          - [t2.micro, t2.small, t2.medium]
+          - !Ref EC2InstanceType
+
+Resources:
+  # ----------------------------------------------------------------
+  # 1. RED (VPC, Subnets, Gateways)
+  # ----------------------------------------------------------------
+  MainVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !FindInMap [EnvironmentConfig, !Ref Environment, VpcCIDR]
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-VPC"
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Condition: CreateIGWCondition
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !If [CreateIGWCondition, "MainIGW", "N/A"]
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Condition: CreateIGWCondition
+    Properties:
+      VpcId: !Ref MainVPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # Subredes Públicas (Para ALB y Bastion)
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MainVPC
+      CidrBlock: !FindInMap [EnvironmentConfig, !Ref Environment, PublicSubnet1CIDR]
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags: [{Key: Name, Value: PublicSubnet1}]
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MainVPC
+      CidrBlock: !FindInMap [EnvironmentConfig, !Ref Environment, PublicSubnet2CIDR]
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags: [{Key: Name, Value: PublicSubnet2}]
+
+  # Subredes Privadas (Para App y RDS)
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MainVPC
+      CidrBlock: !FindInMap [EnvironmentConfig, !Ref Environment, PrivateSubnet1CIDR]
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      Tags: [{Key: Name, Value: PrivateSubnet1}]
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MainVPC
+      CidrBlock: !FindInMap [EnvironmentConfig, !Ref Environment, PrivateSubnet2CIDR]
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      Tags: [{Key: Name, Value: PrivateSubnet2}]
+
+  # Route Table Pública (Solo si hay IGW)
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Condition: CreateIGWCondition
+    Properties:
+      VpcId: !Ref MainVPC
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    Condition: CreateIGWCondition
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1Assoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: CreateIGWCondition
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnet2Assoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: CreateIGWCondition
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  # ----------------------------------------------------------------
+  # 2. SEGURIDAD (Security Groups)
+  # ----------------------------------------------------------------
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${AWS::StackName}-ALB-SG"
+      GroupDescription: "Permitir HTTP publico al ALB"
+      VpcId: !Ref MainVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  AppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${AWS::StackName}-App-SG"
+      GroupDescription: "Permitir trafico desde ALB y SSH"
+      VpcId: !Ref MainVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0 # Idealmente restringir a VPN
+
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${AWS::StackName}-DB-SG"
+      GroupDescription: "Permitir trafico MySQL desde App"
+      VpcId: !Ref MainVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref AppSecurityGroup
+
+  # ----------------------------------------------------------------
+  # 3. COMPUTACIÓN (ALB, ASG, Bastion)
+  # ----------------------------------------------------------------
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "${AWS::StackName}-ALB"
+      Scheme: !If [IsALBPublic, "internet-facing", "internal"]
+      SecurityGroups: [!Ref ALBSecurityGroup]
+      Subnets: 
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      Type: "application"
+
+  ALBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${AWS::StackName}-TG"
+      Port: 80
+      Protocol: HTTP
+      VpcId: !Ref MainVPC
+      HealthCheckPath: "/"
+      Matcher:
+        HttpCode: "200-399"
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ALBTargetGroup
+
+  # Launch Template para el ASG
+  AppLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        ImageId: !Ref AmiID
+        InstanceType: !FindInMap [EnvironmentConfig, !Ref Environment, AppInstanceType]
+        KeyName: !Ref KeyPairName
+        SecurityGroupIds: [!Ref AppSecurityGroup]
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            yum install -y httpd
+            systemctl start httpd
+            systemctl enable httpd
+            echo "Hola desde ${Environment}" > /var/www/html/index.html
+
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: !Sub "${AWS::StackName}-ASG"
+      MinSize: 1
+      MaxSize: 3
+      DesiredCapacity: 2
+      VPCZoneIdentifier:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      LaunchTemplate:
+        LaunchTemplateId: !Ref AppLaunchTemplate
+        Version: !GetAtt AppLaunchTemplate.LatestVersionNumber
+      TargetGroupARNs: [!Ref ALBTargetGroup]
+
+  # Instancia Condicional (Ejemplo 2) - Bastion Host
+  BastionInstance:
+    Type: AWS::EC2::Instance
+    Condition: CreateBastionCondition
+    Properties:
+      ImageId: !Ref AmiID
+      InstanceType: !Ref EC2InstanceType
+      SubnetId: !Ref PublicSubnet1
+      KeyName: !Ref KeyPairName
+      SecurityGroupIds: [!Ref AppSecurityGroup]
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-Bastion"
+
+  # ----------------------------------------------------------------
+  # 4. BASE DE DATOS (RDS Multi-AZ)
+  # ----------------------------------------------------------------
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnets para RDS
+      SubnetIds: 
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+
+  MySQLInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      Engine: mysql
+      EngineVersion: "8.0"
+      DBInstanceIdentifier: !Sub "db-${Environment}"
+      DBInstanceClass: !FindInMap [EnvironmentConfig, !Ref Environment, DBInstanceClass]
+      MasterUsername: !Ref DBUser
+      MasterUserPassword: !Ref DBPassword
+      DBName: !Ref DBName
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups: [!Ref DBSecurityGroup]
+      MultiAZ: true # Del Ejemplo 6
+      AllocatedStorage: "20"
+      Port: "3306"
+
+  # ----------------------------------------------------------------
+  # 5. ALMACENAMIENTO (S3 Condicional)
+  # ----------------------------------------------------------------
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref MyBucketName
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: !If [IsBucketPublic, false, true]
+        BlockPublicPolicy: !If [IsBucketPublic, false, true]
+        IgnorePublicAcls: !If [IsBucketPublic, false, true]
+        RestrictPublicBuckets: !If [IsBucketPublic, false, true]
+      LifecycleConfiguration:
+        Rules:
+          - Id: MoveToMappedStorage
+            Status: Enabled
+            Transitions:
+              - StorageClass: !FindInMap [EnvironmentConfig, !Ref Environment, S3StorageClass]
+                TransitionInDays: 30
+
+  PublicBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: IsBucketPublic
+    Properties:
+      Bucket: !Ref S3Bucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: 's3:GetObject'
+            Resource: !Sub "arn:aws:s3:::${MyBucketName}/*"
+
+Outputs:
+  ALBUrl:
+    Description: URL publica del balanceador de carga
+    Value: !Sub "http://${ApplicationLoadBalancer.DNSName}"
+    Condition: CreateIGWCondition # Solo útil si hay IGW
+
+  DBEndpoint:
+    Description: Endpoint de conexión a la base de datos
+    Value: !GetAtt MySQLInstance.Endpoint.Address
+
+  S3BucketName:
+    Description: Nombre del bucket creado
+    Value: !Ref S3Bucket
+
+  BastionPublicIP:
+    Description: IP publica del Bastion (si se creo)
+    Value: !If [CreateBastionCondition, !GetAtt BastionInstance.PublicIp, "No Creado"]

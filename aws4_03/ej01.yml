@@ -1,0 +1,216 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Parameters:
+  VpcCIDR:
+    Type: String
+    Description: The CIDR block for the VPC
+    Default: 10.0.0.0/16
+  
+  EnvironmentName:
+    Description: "Another Simple String Parameters with a list of allowed values"
+    Type: String
+    Default: dev
+    AllowedValues: 
+      - dev
+      - prod
+    ConstraintDescription: Must be dev or prod.
+
+  TargetPeeringVpcId:
+    Type: String
+    Default: vpc-12345678
+    Description: ID of the existing destination VPC for Peering Connection.
+
+Mappings:
+  SubnetConfig:
+    dev:
+      Public1: 20.0.1.0/24
+      Public2: 20.0.2.0/24
+      Private1: 20.0.10.0/24
+      Private2: 20.0.11.0/24
+    prod:
+      Public1: 20.0.50.0/24
+      Public2: 20.0.51.0/24
+      Private1: 20.0.60.0/24
+      Private2: 20.0.61.0/24
+
+
+Resources:
+  VPC1:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCIDR
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName} -vpc1" 
+
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC1
+      CidrBlock: !FindInMap [SubnetConfig, !Ref EnvironmentName, Public1]
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-public-subnet"
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC1
+      CidrBlock: !FindInMap [SubnetConfig, !Ref EnvironmentName, Public2]
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-public-subnet"
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-internet-gateway"
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC1
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC1
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-public-rt"
+
+  PublicSubnet1Association:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnet2Association:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+    
+
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC1
+      CidrBlock: !FindInMap [SubnetConfig, !Ref EnvironmentName, Private1]
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-private-subnet"
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC1
+      CidrBlock: !FindInMap [SubnetConfig, !Ref EnvironmentName, Private2]
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-private-subnet"
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC1
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-private-rt"
+
+  PrivateSubnet1Association:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnet2Association:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt ElasticIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-nat-gateway"
+
+  ElasticIP:
+    Type: AWS::EC2::EIP
+    DependsOn: AttachGateway
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-elastic-ip"
+
+  VPCPeering:
+    Type: AWS::EC2::VPCPeeringConnection
+    Properties:
+      VpcId: !Ref VPC1
+      PeerVpcId: !Ref TargetPeeringVpcId
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-peering"
+
+
+Outputs:
+  VPCID:
+    Description: A reference to the created VPC
+    Value: !Ref VPC1
+    Export:
+      Name: !Sub "${EnvironmentName}-VPCID"
+
+  PublicSubnet1ID:
+    Description: A reference to the public subnet
+    Value: !Ref PublicSubnet1
+    Export:
+      Name: !Sub "${EnvironmentName}-PublicSubnet1ID"
+
+  PublicSubnet2ID:
+    Description: A reference to the public subnet
+    Value: !Ref PublicSubnet2
+    Export:
+      Name: !Sub "${EnvironmentName}-PublicSubnet2ID"
+
+  PrivateSubnet1ID:
+    Description: A reference to the private subnet
+    Value: !Ref PrivateSubnet1
+    Export:
+      Name: !Sub "${EnvironmentName}-PrivateSubnet1ID"
+
+  PrivateSubnet2ID:
+    Description: A reference to the private subnet
+    Value: !Ref PrivateSubnet2
+    Export:
+      Name: !Sub "${EnvironmentName}-PrivateSubnet2ID"
+
+  VPCPeeringID:
+    Description: A reference to the VPC peering connection
+    Value: !Ref VPCPeering
+    Export:
+      Name: !Sub "${EnvironmentName}-VPCPeeringID"
+  
+  NatGatewayID:
+    Description: The ID of the NAT Gateway
+    Value: !Ref NatGateway
+    Export:
+      Name: !Sub "${EnvironmentName}-NatGatewayID"
